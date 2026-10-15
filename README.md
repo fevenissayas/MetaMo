@@ -19,6 +19,7 @@ core/       State types, accessors, constants, and shared helpers
 openpsi/    Appraisal and feeling dynamics
 magus/      Goal/modulator-based action scoring and selection
 dynamics/   Stability, coherence, and safety functions
+inference/  Motivation-driven PLN inference control
 category/   Functors and bimonad abstractions
 main/       Reusable MetaMo cycle and integration entry points
 llm/        Python/MeTTa bridges and LLM parsing/response helpers
@@ -135,6 +136,43 @@ python3 scripts/run-tests.py \
 MetaMo trading agent with a momentum baseline across fixed market scenarios.
 It includes scenario generation, MeTTa tests, run-log plotting, and support for
 CSV price data. Start with the [trading-agent README](usecase/metamo-trading-agent/README.md).
+
+### PLN inference control
+
+[`inference/`](inference/) uses MetaMo for inference control: it decides which
+Probabilistic Logic Networks inferences to run.
+Each candidate rule application `(r, H)` becomes an OpenPSI stimulus (novelty,
+conduciveness, risk, effort) and is appraised into `(G, M')`. MAGUS scores it as
+
+```text
+score(r, H) = sum_i g_i m'_i rel_i(r, H) - lambdaInd gInd risk(r, H) + lambdaTrans gTrans growth(r, H)
+```
+
+The top-k inferences run; the others are deferred or pruned. Breadth (k)
+widens with arousal, curiosity/novelty goals and `gTrans`. The confidence
+cutoff tightens with threshold, `gEthic` and `gInd`. Proof depth grows with
+resolution and `gHelp`. Near resource or risk limits, `gInd` throttles
+inference and `gTrans` softens the throttle. After each step the state blends
+toward its target with `alpha = alpha0 (1 - gInd) + beta0 gTrans`.
+
+- [`inference/pln_rules.metta`](inference/pln_rules.metta): PLN truth functions and
+  rules (revision, modus ponens, deduction, induction, abduction), ported from
+  PeTTa's `lib_pln.metta`
+- [`inference/control.metta`](inference/control.metta): appraisal, scoring,
+  allocation, pruning, blending, and `runInferenceControl`
+- [`inference/config.metta`](inference/config.metta): rule profiles and tuning constants
+- [`inference/self_upgrade.metta`](inference/self_upgrade.metta): a worked
+  self-upgrade example (efficacy, safety, ethics, and user-trust tasks)
+
+Run the play-by-play demo:
+
+```bash
+/path/to/PeTTa/run.sh applications/inference_control.metta
+```
+
+Domain code can mark concepts as risky or reassuring with
+`(InferenceRiskTag $concept $weight)`, and link concepts to goals with
+`(InferenceGoalTag $concept $goal $weight)`.
 
 ## Configuration
 
