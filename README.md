@@ -155,9 +155,12 @@ resolution and `gHelp`. Near resource or risk limits, `gInd` throttles
 inference and `gTrans` softens the throttle. After each step the state blends
 toward its target with `alpha = alpha0 (1 - gInd) + beta0 gTrans`.
 
-- [`inference/pln_rules.metta`](inference/pln_rules.metta): PLN truth functions and
-  rules (revision, modus ponens, deduction, induction, abduction), ported from
-  PeTTa's `lib_pln.metta`
+- [`inference/pln_rules.metta`](inference/pln_rules.metta): adapter over
+  PeTTa's PLN library (`lib/lib_pln.metta`). The truth functions, rules (`|-`)
+  and evidence stamps come from lib_pln; the adapter supplies term priors
+  (`STV`), names the rule behind each conclusion, and holds belief helpers.
+  Files that use it import lib_pln first:
+  `!(import! &self (library lib_pln))`
 - [`inference/control.metta`](inference/control.metta): appraisal, scoring,
   allocation, pruning, blending, and `runInferenceControl`
 - [`inference/config.metta`](inference/config.metta): rule profiles and tuning constants
