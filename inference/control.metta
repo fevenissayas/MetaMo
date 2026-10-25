@@ -181,9 +181,9 @@
                 ((belief $t1 $tv1 $s1) (superpose $beliefs))
                 ((belief $t2 $tv2 $s2) (superpose $beliefs))
             )
-                (if (plnStampDisjoint $s1 $s2)
+                (if (StampDisjoint $s1 $s2)
                     (let ($rule ($term $tv)) (plnApplyRule ($t1 $tv1) ($t2 $tv2))
-                        (inferenceCandidate $rule $term $tv (plnStampMerge $s1 $s2) ($t1 $t2))
+                        (inferenceCandidate $rule $term $tv (StampConcat $s1 $s2) ($t1 $t2))
                     )
                     (empty)
                 )
@@ -225,17 +225,17 @@
         ((inferenceCandidate $rule $term (stv $s $c) $stamp $premises) $candidate)
         (($ruleNovelty $ruleRisk $ruleEffort) (inferenceRuleProfile $rule))
         ($known (plnKnownConfidence $term $beliefs))
-        ($novelty (plnClamp
+        ($novelty (npClip
             (+ (* (INFERENCE_NOVELTY_UNKNOWN_WEIGHT) (- 1.0 $known))
                (* (INFERENCE_NOVELTY_RULE_WEIGHT) $ruleNovelty))
             0.0 1.0))
         ($relevance (inferenceRelevance $term $targets))
-        ($risk (plnClamp
+        ($risk (npClip
             (+ (+ (* (INFERENCE_RISK_RULE_WEIGHT) $ruleRisk)
                   (* (INFERENCE_RISK_UNCERTAINTY_WEIGHT) (- 1.0 $c)))
                (* (INFERENCE_RISK_DOMAIN_WEIGHT) (inferenceDomainRisk $term $s)))
             0.0 1.0))
-        ($effort (plnClamp
+        ($effort (npClip
             (+ (* (INFERENCE_EFFORT_RULE_WEIGHT) $ruleEffort)
                (* (- 1.0 (INFERENCE_EFFORT_RULE_WEIGHT))
                   (/ (size-atom $stamp) (INFERENCE_EFFORT_DEPTH_REF))))
@@ -276,7 +276,7 @@
 )
 
 (= (inferenceGoalRelevance $goal $term $strength $features)
-    (plnClamp
+    (npClip
         (+ (inferenceBaseRelevance $goal $features)
            (* $strength (inferenceTagGoal (inferenceTermSymbols $term) $goal)))
         -1.0 1.0)
@@ -326,7 +326,7 @@
 
 ;; max(budget spent, safety boundary pressure).
 (= (inferencePressure $state $executedSoFar)
-    (max (plnClamp (/ (* 1.0 $executedSoFar) (INFERENCE_BUDGET)) 0.0 1.0)
+    (max (npClip (/ (* 1.0 $executedSoFar) (INFERENCE_BUDGET)) 0.0 1.0)
          (boundaryPressure $state))
 )
 
@@ -374,7 +374,7 @@
         ($arousal (getModulator $state arousal))
         ($threshold (getModulator $state threshold))
         ($resolution (getModulator $state resolution))
-        ($widen (plnClamp
+        ($widen (npClip
             (* (* $arousal (+ (* 0.5 $gCurio) (* 0.5 $gNovel))) (+ 0.5 $gTrans))
             0.0 1.0))
         ($breadth (+ (INFERENCE_K_MIN)
@@ -451,7 +451,7 @@
 
 ;; alpha = alpha0 (1 - gInd) + beta0 gTrans
 (= (inferenceBlendFactor $state)
-    (plnClamp
+    (npClip
         (+ (* (INFERENCE_ALPHA_0) (- 1.0 (getGoal $state gInd)))
            (* (INFERENCE_BETA_0) (getGoal $state gTrans)))
         0.0 1.0)

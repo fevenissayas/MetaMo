@@ -10,6 +10,7 @@
 !(import! &self ../../magus/decision)
 !(import! &self ../../dynamics/stability)
 !(import! &self ../../dynamics/coherence)
+!(import! &self (library lib_pln))
 !(import! &self ../pln_rules)
 !(import! &self ../config)
 !(import! &self ../control)

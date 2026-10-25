@@ -13,6 +13,7 @@
 !(import! &self ../magus/decision)
 !(import! &self ../dynamics/stability)
 !(import! &self ../dynamics/coherence)
+!(import! &self (library lib_pln))
 !(import! &self ../inference/pln_rules)
 !(import! &self ../inference/config)
 !(import! &self ../inference/control)
