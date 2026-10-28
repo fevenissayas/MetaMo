@@ -14,7 +14,7 @@
 !(import! &self ../dynamics/stability)
 !(import! &self ../dynamics/coherence)
 !(import! &self (library lib_pln))
-!(import! &self ../inference/pln_rules)
+!(import! &self ../inference/pln_adapter)
 !(import! &self ../inference/config)
 !(import! &self ../inference/control)
 !(import! &self ../inference/self_upgrade)

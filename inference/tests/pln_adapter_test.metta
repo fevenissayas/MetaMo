@@ -1,7 +1,7 @@
 !(import! &self ../../core/helper)
 !(import! &self "../../core/helpers.py")
 !(import! &self (library lib_pln))
-!(import! &self ../pln_rules)
+!(import! &self ../pln_adapter)
 
 (PlnTermPrior a (stv 0.4 0.9))
 (PlnTermPrior b (stv 0.4 0.9))

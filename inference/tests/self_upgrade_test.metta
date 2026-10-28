@@ -11,7 +11,7 @@
 !(import! &self ../../dynamics/stability)
 !(import! &self ../../dynamics/coherence)
 !(import! &self (library lib_pln))
-!(import! &self ../pln_rules)
+!(import! &self ../pln_adapter)
 !(import! &self ../config)
 !(import! &self ../control)
 !(import! &self ../self_upgrade)
