@@ -6,7 +6,8 @@
 (InferenceRiskTag unsafe 0.9)
 (InferenceRiskTag selfModification 0.3)
 (InferenceRiskTag safe -0.5)
-(InferenceRiskTag ethical -0.3)
+(InferenceRiskTag ethical -0.5)
+(InferenceRiskTag userTrust -0.3)
 
 (InferenceGoalTag efficacy gSelf 0.8)
 (InferenceGoalTag fasterReasoning gSelf 0.4)
@@ -61,7 +62,6 @@
 
 (= (SELF_UPGRADE_PROOF_STRENGTH) 0.6)
 (= (SELF_UPGRADE_UNSAFE_LIMIT) 0.5)
-(= (SELF_UPGRADE_IND_LIMIT) 0.5)
 
 ;; Strong enough and above the current confidence cutoff.
 (= (selfUpgradeEstablished $task $state $beliefs)
@@ -72,43 +72,32 @@
         (if (== $best ())
             False
             (and (>= (beliefStrength $best) (SELF_UPGRADE_PROOF_STRENGTH))
-                 (>= (beliefConfidence $best) (allocationCutoff (computeInferenceAllocation $state))))
-        )
-    )
+                 (>= (beliefConfidence $best) (allocationCutoff (computeInferenceAllocation $state))))))
 )
 
 (= (selfUpgradeMissing $tasks $state $beliefs)
-    (if (== $tasks ())
-        ()
-        (let ($head $tail) (decons $tasks)
-            (if (selfUpgradeEstablished $head $state $beliefs)
-                (selfUpgradeMissing $tail $state $beliefs)
-                (cons-atom $head (selfUpgradeMissing $tail $state $beliefs))
-            )
-        )
-    )
+    (collapse (let $task (superpose $tasks)
+                  (if (selfUpgradeEstablished $task $state $beliefs) (empty) $task)))
 )
 
 (= (selfUpgradeUnsafeStrength $beliefs)
     (let $best (plnBestBelief (Implication upgrade unsafe) $beliefs)
-        (if (== $best ()) 0.0 (beliefStrength $best))
-    )
+        (if (== $best ()) 0.0 (beliefStrength $best)))
 )
 
-;; (adoptIncrementally $alpha) or (defer $reasons).
-(= (selfUpgradeVerdict $state $beliefs)
+;; Adopt once efficacy, safety and ethics are proven and gInd has fallen since
+;; $previous; the step size is the coherence alpha.
+;; -> (adoptIncrementally $alpha) or (defer $reasons)
+(= (selfUpgradeVerdict $previous $state $beliefs)
     (let* (
+        ($unsafe (if (>= (selfUpgradeUnsafeStrength $beliefs) (SELF_UPGRADE_UNSAFE_LIMIT)) (unsafeEvidence) ()))
         ($missing (selfUpgradeMissing (selfUpgradeRequiredTasks) $state $beliefs))
-        ($unsafe (selfUpgradeUnsafeStrength $beliefs))
-        ($gInd (getGoal $state gInd))
-        ($reasons (if (>= $unsafe (SELF_UPGRADE_UNSAFE_LIMIT)) (cons-atom unsafeEvidence $missing) $missing))
-        ($allReasons (if (> $gInd (SELF_UPGRADE_IND_LIMIT)) (inferenceAppend $reasons (individuationHigh)) $reasons))
+        ($guarded (if (< (getGoal $state gInd) (getGoal $previous gInd)) () (individuationNotFalling)))
+        ($reasons (append $unsafe (append $missing $guarded)))
     )
-        (if (== $allReasons ())
+        (if (== $reasons ())
             (adoptIncrementally (roundNum (inferenceBlendFactor $state) 3))
-            (defer $allReasons)
-        )
-    )
+            (defer $reasons)))
 )
 
 ;; Phases
@@ -117,8 +106,7 @@
 (= (selfUpgradePhase $state $beliefs $phase $steps)
     (runInferenceControlOn
         $state
-        (inferenceAppend $beliefs
-            (plnMakeBeliefs (selfUpgradeEvidence $phase) (selfUpgradeEvidenceStart $phase)))
+        (append $beliefs (plnMakeBeliefs (selfUpgradeEvidence $phase) (selfUpgradeEvidenceStart $phase)))
         (selfUpgradeTargets)
         $steps)
 )
@@ -129,43 +117,33 @@
 (= (phaseRecordVerdict (phaseRecord $phase $state $beliefs $fired $verdict)) $verdict)
 
 (= (selfUpgradeFired $trace)
-    (if (== $trace ())
-        ()
-        (let* (
-            (($head $tail) (decons $trace))
-            ((inferenceStep $step $allocation $fired $deferred $pruned $state) $head)
-        )
-            (inferenceAppend $fired (selfUpgradeFired $tail))
-        )
-    )
+    (collapse (let* (((inferenceStep $step $allocation $fired $deferred $pruned $state) (superpose $trace))
+                     ($item (superpose $fired)))
+                  $item))
 )
 
-(= (selfUpgradeRecord $phase $run)
-    (let (inferenceRun $state $beliefs $trace) $run
+;; Run one evidence phase from the record before it.
+(= (selfUpgradeRecord $phase $before $steps)
+    (let (inferenceRun $state $beliefs $trace)
+         (selfUpgradePhase (phaseRecordState $before) (phaseRecordBeliefs $before) $phase $steps)
         (phaseRecord $phase $state $beliefs (selfUpgradeFired $trace)
-                     (selfUpgradeVerdict $state $beliefs))
-    )
+                     (selfUpgradeVerdict (phaseRecordState $before) $state $beliefs)))
 )
 
-(= (selfUpgradeDecisionRecord $phase $state $beliefs)
-    (phaseRecord $phase $state $beliefs () (selfUpgradeVerdict $state $beliefs))
+;; Decision point on a record, compared with an earlier state.
+(= (selfUpgradeDecisionRecord $phase $previous (phaseRecord $p $state $beliefs $fired $verdict))
+    (phaseRecord $phase $state $beliefs () (selfUpgradeVerdict $previous $state $beliefs))
 )
 
 ;; Initial, Discovery, Decision, Sandbox, Consult, Final.
 (= (runSelfUpgradeScenario $initialState $steps)
     (let* (
-        ($initial (selfUpgradeDecisionRecord initial $initialState ()))
-        ($discovery (selfUpgradeRecord discovery
-            (selfUpgradePhase $initialState () discovery $steps)))
-        ($decision (selfUpgradeDecisionRecord decision
-            (phaseRecordState $discovery) (phaseRecordBeliefs $discovery)))
-        ($sandbox (selfUpgradeRecord sandbox
-            (selfUpgradePhase (phaseRecordState $discovery) (phaseRecordBeliefs $discovery) sandbox $steps)))
-        ($consult (selfUpgradeRecord consult
-            (selfUpgradePhase (phaseRecordState $sandbox) (phaseRecordBeliefs $sandbox) consult $steps)))
-        ($final (selfUpgradeDecisionRecord final
-            (phaseRecordState $consult) (phaseRecordBeliefs $consult)))
+        ($initial (phaseRecord initial $initialState () () (selfUpgradeVerdict $initialState $initialState ())))
+        ($discovery (selfUpgradeRecord discovery $initial $steps))
+        ($decision (selfUpgradeDecisionRecord decision $initialState $discovery))
+        ($sandbox (selfUpgradeRecord sandbox $discovery $steps))
+        ($consult (selfUpgradeRecord consult $sandbox $steps))
+        ($final (selfUpgradeDecisionRecord final (phaseRecordState $sandbox) $consult))
     )
-        ($initial $discovery $decision $sandbox $consult $final)
-    )
+        ($initial $discovery $decision $sandbox $consult $final))
 )
