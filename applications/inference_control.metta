@@ -43,8 +43,8 @@
                           (roundList (motivationGoals $state) 3))))
         ($_ (println! (  modulators (valence arousal approach resolution threshold securing)
                           (roundList (motivationModulators $state) 3))))
-        ((inferenceAllocation $k $cutoff $depth) (computeInferenceAllocation $state))
-        ($_ (println! (  allocation (breadth $k) (cutoff (roundNum $cutoff 3)) (depth $depth))))
+        ((inferenceAllocation $k $cutoff $deepen) (computeInferenceAllocation $state))
+        ($_ (println! (  allocation (breadth $k) (cutoff (roundNum $cutoff 3)) (deepen (roundNum $deepen 3)))))
         ($_ (printFired $fired))
         ($_ (println! (  verdict $verdict)))
     )
@@ -68,7 +68,7 @@
 (= (allocationDemo $label $state)
     (let* (
         ($beliefs (plnMakeBeliefs (selfUpgradeEvidence discovery) 1))
-        ((inferenceStepResult $next $nextBeliefs $executed $deferred $pruned $allocation)
+        ((inferenceStepResult $next $nextBeliefs $executed $deferred $pruned $allocation $shift)
          (inferenceControlStep $state $beliefs (selfUpgradeTargets) 0))
     )
         (println! ($label $allocation

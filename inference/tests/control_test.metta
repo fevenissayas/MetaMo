@@ -16,6 +16,7 @@
 !(import! &self ../control)
 
 (InferenceRiskTag unsafe 0.9)
+(InferenceRiskTag safe -0.5)
 
 ;; Shared motivational states.
 ;; Goals: (gInd gTrans gHelp gCurio gNovel gSelf gEthic gSoc)
@@ -32,6 +33,15 @@
     (motivation (0.35 0.9 0.5 0.9 0.9 0.6 0.4 0.5) (0.6 0.8 0.8 0.5 0.3 0.3))
 )
 
+;; Neutral except for one goal.
+(= (highIndState) (motivation (0.9 0.5 0.5 0.5 0.5 0.5 0.5 0.5) (0.5 0.5 0.5 0.5 0.5 0.5)))
+(= (lowIndState) (motivation (0.1 0.5 0.5 0.5 0.5 0.5 0.5 0.5) (0.5 0.5 0.5 0.5 0.5 0.5)))
+(= (highTransState) (motivation (0.5 0.9 0.5 0.5 0.5 0.5 0.5 0.5) (0.5 0.5 0.5 0.5 0.5 0.5)))
+(= (lowTransState) (motivation (0.5 0.1 0.5 0.5 0.5 0.5 0.5 0.5) (0.5 0.5 0.5 0.5 0.5 0.5)))
+
+;; gInd just above THETA_SAFE, so the state is near the safe-region boundary.
+(= (nearBoundaryState) (motivation (0.35 0.5 0.5 0.5 0.5 0.5 0.5 0.5) (0.5 0.5 0.5 0.5 0.5 0.5)))
+
 ;; Knowledge base with deductive, inductive and abductive openings, one weak
 ;; link (c -> d) and one risky concept.
 (= (testBeliefs)
@@ -46,28 +56,61 @@
 
 (= (testTargets) ((Inheritance a d)))
 
+(= (relevanceOf (inferenceCandidate $rule $term $tv $stamp $premises))
+    (inferenceRelevance $term (testTargets))
+)
+
 (= (featuresOf $candidate)
-    (inferenceFeatures $candidate (testBeliefs) (testTargets))
+    (inferenceFeatures $candidate (relevanceOf $candidate) (testBeliefs))
 )
 
-(= (stimulusOf $candidate)
-    (inferenceStimulus $candidate (featuresOf $candidate))
+(= (stimulusValue $candidate $idx)
+    (index-atom (stimulusValues (inferenceStimulus (featuresOf $candidate))) $idx)
 )
 
-(= (scoreIn $state $candidate)
-    (scoredScore (scoreInference $state $candidate (testBeliefs) (testTargets) 0.0))
+(= (appraisedIn $state $candidate)
+    (inferenceAppraise $state (featuresOf $candidate))
 )
 
-(= (safeConclusion)
-    (inferenceCandidate deduction (Inheritance b d) (stv 0.6 0.9) (1 2) ())
+(= (scoredIn $state $candidate)
+    (scoreInference $state $candidate (relevanceOf $candidate) (testBeliefs) 1.0)
+)
+
+(= (scoreIn $state $candidate) (scoredScore (scoredIn $state $candidate)))
+
+(= (deltaGoal $candidate $goal)
+    (index-atom (scoredDeltaG (scoredIn (neutralState) $candidate))
+                (match &self (GoalIndex $goal $idx) $idx))
+)
+
+(= (relevantConclusion)
+    (inferenceCandidate deduction (Inheritance a d) (stv 0.6 0.9) (1 2) ())
+)
+
+(= (unrelatedConclusion)
+    (inferenceCandidate deduction (Inheritance x y) (stv 0.6 0.9) (1 2) ())
 )
 
 (= (riskyConclusion)
-    (inferenceCandidate deduction (Inheritance b unsafe) (stv 0.6 0.9) (1 2) ())
+    (inferenceCandidate deduction (Inheritance a unsafe) (stv 0.6 0.9) (1 2) ())
+)
+
+(= (safeConclusion)
+    (inferenceCandidate deduction (Inheritance a safe) (stv 0.6 0.9) (1 2) ())
+)
+
+;; A novel, low-confidence proof on the task.
+(= (tentativeProof)
+    (inferenceCandidate induction (Inheritance d a) (stv 0.6 0.2) (1 2) ())
+)
+
+;; A confident proof that the task is safe.
+(= (safetyProof)
+    (inferenceCandidate deduction (Inheritance a safe) (stv 0.9 0.9) (1 2) ())
 )
 
 (= (stepSummary $state)
-    (let (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation)
+    (let (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation $shift)
          (inferenceControlStep $state (testBeliefs) (testTargets) 0)
         ((size-atom $executed) (size-atom $deferred) (size-atom $pruned))
     )
@@ -89,71 +132,111 @@
         ((Inheritance a b) (Inheritance b c))))
 )
 
-;; Appraisal (Psi): candidate -> stimulus
+;; Step 1, appraisal: each (r, H) is a stimulus (novelty conduciveness risk cost).
 
 ;; Unknown conclusions are more novel than ones already believed.
 !(test
-    (> (index-atom (stimulusValues (stimulusOf (inferenceCandidate deduction (Inheritance x y) (stv 0.6 0.9) (1 2) ()))) 0)
-       (index-atom (stimulusValues (stimulusOf (inferenceCandidate revision (Inheritance a c) (stv 0.6 0.9) (1 2) ()))) 0))
+    (> (stimulusValue (unrelatedConclusion) 0)
+       (stimulusValue (inferenceCandidate revision (Inheritance a c) (stv 0.6 0.9) (1 2) ()) 0))
     True
 )
 
-;; Concepts tagged as risky raise the stimulus risk.
-!(test
-    (> (index-atom (stimulusValues (stimulusOf (riskyConclusion))) 2)
-       (index-atom (stimulusValues (stimulusOf (safeConclusion))) 2))
-    True
-)
+;; Task-relevant conclusions are more conducive.
+!(test (> (stimulusValue (relevantConclusion) 1) (stimulusValue (unrelatedConclusion) 1)) True)
 
-;; Target-relevant conclusions are more conducive.
-!(test
-    (> (index-atom (stimulusValues (stimulusOf (inferenceCandidate deduction (Inheritance a d) (stv 0.6 0.9) (1 2) ()))) 1)
-       (index-atom (stimulusValues (stimulusOf (safeConclusion))) 1))
-    True
-)
+;; Risk tags raise the risk; a confident safety proof enters as negative risk.
+!(test (> (stimulusValue (riskyConclusion) 2) (stimulusValue (unrelatedConclusion) 2)) True)
+!(test (< (stimulusValue (safetyProof) 2) 0.0) True)
 
-;; Appraisal leaves goals untouched and raises securing more for risky inferences.
+;; Uncertainty a proof resolves on the task counts against its risk.
+!(test (< (stimulusValue (relevantConclusion) 2) (stimulusValue (unrelatedConclusion) 2)) True)
+
+;; Appraisal changes modulators only.
 !(test
-    (motivationGoals (inferenceAppraise (cautiousState) (riskyConclusion) (featuresOf (riskyConclusion))))
+    (motivationGoals (appraisedIn (cautiousState) (riskyConclusion)))
     (0.9 0.2 0.6 0.3 0.3 0.4 0.9 0.4)
 )
 
+;; A novel low-confidence proof raises arousal and threshold.
+!(test (> (getModulator (appraisedIn (neutralState) (tentativeProof)) arousal) 0.5) True)
+!(test (> (getModulator (appraisedIn (neutralState) (tentativeProof)) threshold) 0.5) True)
+
+;; A successful safety proof lowers threshold and securing.
+!(test (< (getModulator (appraisedIn (neutralState) (safetyProof)) threshold) 0.5) True)
+!(test (< (getModulator (appraisedIn (neutralState) (safetyProof)) securing) 0.5) True)
+
+;; Reassurance keeps modulators inside [0, 1].
 !(test
-    (> (getModulator (inferenceAppraise (neutralState) (riskyConclusion) (featuresOf (riskyConclusion))) securing)
-       (getModulator (inferenceAppraise (neutralState) (safeConclusion) (featuresOf (safeConclusion))) securing))
+    (let $mods (motivationModulators
+                  (appraisedIn (motivation (0.1 0.5 0.5 0.5 0.5 0.5 0.5 0.5) (0.5 0.5 0.5 0.5 0.01 0.01))
+                               (safetyProof)))
+        (and (>= (min-atom $mods) 0.0) (<= (max-atom $mods) 1.0)))
     True
 )
 
-;; Decision (D): MAGUS scoring
-
-;; A conclusion that answers the target outranks an unrelated one.
+;; gInd amplifies the threshold and securing response to risk.
 !(test
-    (> (scoreIn (neutralState) (inferenceCandidate deduction (Inheritance a d) (stv 0.6 0.9) (1 2) ()))
-       (scoreIn (neutralState) (safeConclusion)))
+    (> (getModulator (appraisedIn (highIndState) (riskyConclusion)) securing)
+       (getModulator (appraisedIn (lowIndState) (riskyConclusion)) securing))
     True
 )
+
+;; gTrans amplifies the arousal and approach response to novelty.
+!(test
+    (> (getModulator (appraisedIn (highTransState) (unrelatedConclusion)) arousal)
+       (getModulator (appraisedIn (lowTransState) (unrelatedConclusion)) arousal))
+    True
+)
+
+;; Step 2, decision: score = sum_i g_i m'_i rel_i - lambdaInd gInd risk + lambdaTrans gTrans
+
+;; With no task relevance only the overgoal terms remain.
+(= (offTaskRisky) (inferenceCandidate deduction (Inheritance x unsafe) (stv 0.6 0.9) (1 2) ()))
+
+!(test
+    (roundNum (scoreIn (cautiousState) (offTaskRisky)) 6)
+    (roundNum (+ (- 0.0 (* (* (LAMBDA_IND) 0.9) (stimulusValue (offTaskRisky) 2)))
+                 (* (LAMBDA_TRANS) 0.2)) 6)
+)
+
+;; A conclusion that answers the task outranks an unrelated one.
+!(test (> (scoreIn (neutralState) (relevantConclusion)) (scoreIn (neutralState) (unrelatedConclusion))) True)
 
 ;; Risky conclusions are penalised, and more so under strong individuation.
+!(test (> (scoreIn (neutralState) (safeConclusion)) (scoreIn (neutralState) (riskyConclusion))) True)
+
 !(test
-    (> (scoreIn (neutralState) (safeConclusion)) (scoreIn (neutralState) (riskyConclusion)))
+    (> (- (scoreIn (highIndState) (safeConclusion)) (scoreIn (highIndState) (riskyConclusion)))
+       (- (scoreIn (lowIndState) (safeConclusion)) (scoreIn (lowIndState) (riskyConclusion))))
     True
 )
 
-!(test
-    (> (- (scoreIn (cautiousState) (safeConclusion)) (scoreIn (cautiousState) (riskyConclusion)))
-       (- (scoreIn (exploratoryState) (safeConclusion)) (scoreIn (exploratoryState) (riskyConclusion))))
-    True
-)
+;; Near limits gInd raises the effective penalty and gTrans softens it.
+!(test (roundNum (inferencePenaltyScale (cautiousState) 1.0) 3) 1.7)
+!(test (roundNum (inferencePenaltyScale (exploratoryState) 1.0) 3) 0.45)
+!(test (inferencePenaltyScale (cautiousState) 0.0) 1.0)
 
-;; Dynamic allocation and pruning
+;; Proposed goal changes: unsafe findings raise gInd, safety proofs lower it
+;; and raise gEthic.
+!(test (> (deltaGoal (riskyConclusion) gInd) 0.0) True)
+!(test (< (deltaGoal (safetyProof) gInd) 0.0) True)
+!(test (> (deltaGoal (safetyProof) gEthic) 0.0) True)
 
-!(test (computeInferenceAllocation (neutralState)) (inferenceAllocation 2 0.2 3))
+;; Step 3, allocation and pruning
 
-;; Transcendence and curiosity widen the search, individuation and ethics
-;; tighten the confidence cutoff.
+!(test (computeInferenceAllocation (neutralState)) (inferenceAllocation 2 0.2 0.25))
+
+;; Curiosity, gSelf and transcendence widen the search; threshold, ethics and
+;; individuation tighten the confidence cutoff.
 !(test
     (> (allocationBreadth (computeInferenceAllocation (exploratoryState)))
        (allocationBreadth (computeInferenceAllocation (cautiousState))))
+    True
+)
+
+!(test
+    (> (allocationBreadth (computeInferenceAllocation (motivation (0.5 0.9 0.5 0.5 0.5 0.9 0.5 0.5) (0.5 0.9 0.5 0.5 0.5 0.5))))
+       (allocationBreadth (computeInferenceAllocation (motivation (0.5 0.9 0.5 0.5 0.5 0.1 0.5 0.5) (0.5 0.9 0.5 0.5 0.5 0.5)))))
     True
 )
 
@@ -163,69 +246,63 @@
     True
 )
 
-;; Near limits a high gInd throttles inference while a high gTrans softens it.
-!(test (roundNum (inferenceThrottle (cautiousState) 1.0) 3) 0.37)
-!(test (inferenceThrottle (exploratoryState) 1.0) 0.0)
-!(test (inferenceThrottle (cautiousState) 0.0) 0.0)
+;; d_max(h): proofs go deeper only on relevant subgraphs.
+!(test (inferenceMaxDepth (inferenceAllocation 2 0.2 0.5) 1.0) 4)
+!(test (inferenceMaxDepth (inferenceAllocation 2 0.2 0.5) 0.0) 2)
 
-;; Prune reasons.
+;; Checks made before appraisal.
+!(test (inferencePrePruneReason (inferenceCandidate deduction x (stv 0.9 0.1) (1 2) ()) 1.0 (inferenceAllocation 2 0.2 0.5)) lowConfidence)
+!(test (inferencePrePruneReason (inferenceCandidate deduction x (stv 0.9 0.9) (1 2 3) ()) 0.0 (inferenceAllocation 2 0.2 0.5)) tooDeep)
+!(test (inferencePrePruneReason (inferenceCandidate deduction x (stv 0.9 0.9) (1 2 3) ()) 1.0 (inferenceAllocation 2 0.2 0.5)) ok)
+
+;; Pre-pruned candidates are reported as candidates, without a score.
 !(test
-    (inferencePruneReason
-        (scoredInference 1.0 (inferenceCandidate deduction x (stv 0.9 0.1) (1 2) ()) () ())
-        (inferenceAllocation 2 0.2 3))
-    lowConfidence
+    (let (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation $shift)
+         (inferenceControlStep (cautiousState) (testBeliefs) (testTargets) 0)
+        (let (pruned $reason $item) (car-atom $pruned) (car-atom $item)))
+    inferenceCandidate
 )
 
-!(test
-    (inferencePruneReason
-        (scoredInference 1.0 (inferenceCandidate deduction x (stv 0.9 0.9) (1 2 3 4) ()) () ())
-        (inferenceAllocation 2 0.2 3))
-    tooDeep
-)
-
-!(test
-    (inferencePruneReason
-        (scoredInference -0.5 (inferenceCandidate deduction x (stv 0.9 0.9) (1 2) ()) () ())
-        (inferenceAllocation 2 0.2 3))
-    lowScore
-)
-
-!(test
-    (inferencePruneReason
-        (scoredInference 0.5 (inferenceCandidate deduction x (stv 0.9 0.9) (1 2) ()) () ())
-        (inferenceAllocation 2 0.2 3))
-    ok
-)
-
-;; A cautious controller prunes every weak inference; an exploratory one
-;; runs its top-k and defers the rest. Counts are (executed deferred pruned).
+;; Counts are (executed deferred pruned).
 !(test (stepSummary (cautiousState)) (0 0 7))
-!(test (stepSummary (exploratoryState)) (6 1 0))
+!(test (stepSummary (exploratoryState)) (5 2 0))
 !(test (stepSummary (neutralState)) (2 5 0))
 
 ;; Executed inferences are ranked by score.
 !(test
-    (let (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation)
+    (let (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation $shift)
          (inferenceControlStep (neutralState) (testBeliefs) (testTargets) 0)
         (>= (scoredScore (car-atom $executed)) (scoredScore (car-atom $deferred))))
     True
 )
 
-;; Incremental self-model coherence
+;; Step 4, incremental coherence
 
-!(test (roundNum (inferenceBlendFactor (cautiousState)) 3) 0.11)
-!(test (roundNum (inferenceBlendFactor (exploratoryState)) 3) 0.555)
+(= (blendWith $state $previousShift)
+    (inferenceBlend $state (motivation (motivationGoals $state) (0.9 0.9 0.9 0.9 0.9 0.9)) $previousShift)
+)
+
+(= (shiftOf $state $previousShift)
+    (let (blendStep $next $shift) (blendWith $state $previousShift) $shift)
+)
 
 ;; The blended state lies between the current state and the target.
 !(test
-    (let* (
-        ($state (neutralState))
-        ($target (motivation (0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5) (0.9 0.9 0.9 0.9 0.9 0.9)))
-        ($valence (getModulator (inferenceBlend $state $target) valence))
-    )
-        (and (> $valence 0.5) (< $valence 0.9)))
+    (let (blendStep $next $shift) (blendWith (neutralState) 0.25)
+        (let $valence (getModulator $next valence) (and (> $valence 0.5) (< $valence 0.9))))
     True
 )
+
+;; Individuation slows the step, transcendence speeds it.
+!(test (< (shiftOf (highIndState) 0.25) (shiftOf (lowIndState) 0.25)) True)
+!(test (> (shiftOf (highTransState) 0.25) (shiftOf (lowTransState) 0.25)) True)
+
+;; Near the boundary the shift is contractive: shift <= 0.9 previous + 0.01.
+!(test (> (boundaryPressure (nearBoundaryState)) 0.0) True)
+!(test (<= (shiftOf (nearBoundaryState) 0.05) (+ (* 0.9 0.05) 0.01)) True)
+
+;; Away from the boundary the step is not capped.
+!(test (> (shiftOf (neutralState) 0.05) (+ (* 0.9 0.05) 0.01)) True)
 
 ;; Full run: the controller reaches the target conclusion over a deduction chain.
 (= (chainRun)
@@ -243,9 +320,6 @@
         ($term $stamp))
     ((Inheritance a d) (1 2 3))
 )
-
-;; The run stops once nothing new can be derived.
-!(test (size-atom (inferenceRunTrace (chainRun))) 3)
 
 ;; The final state stays in the safe region.
 !(test (isInSafeRegion (inferenceRunState (chainRun))) True)

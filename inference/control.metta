@@ -1,21 +1,26 @@
-;; MetaMo-driven PLN inference control.
-;; Appraise each candidate (r, H), score it with MAGUS, run the top-k,
-;; and blend the state with alpha = alpha0 (1 - gInd) + beta0 gTrans.
+;; MetaMo-driven PLN inference control, in four steps:
+;;   1. Appraisal (Psi): each candidate (r, H) is an OpenPsi stimulus.
+;;   2. Decision (D): score = sum_i g_i m'_i rel_i - lambdaInd gInd risk + lambdaTrans gTrans
+;;   3. Allocation: breadth, confidence cutoff and relevance-gated depth; top-k run.
+;;   4. Coherence: the state blends toward x*, contractively near the boundary.
 ;; Entry point: (runInferenceControl $state $facts $targets $maxSteps)
 
 ;; Data
 ;; (inferenceCandidate $rule $conclusion $tv $stamp $premises)
-;; (inferenceAllocation $breadth $confidenceCutoff $maxDepth)
-;; (scoredInference $score $candidate $appraisedState $action)
+;; (candidateFeatures $novelty $conduciveness $risk $signedRisk $effort $relevance $ruleNovelty $known $gain)
+;; (inferenceAllocation $breadth $confidenceCutoff $deepen), $deepen = resolution * gHelp
+;; (scoredInference $score $candidate $features $appraisedState $deltaG)
 ;; (inferenceRun $finalState $beliefs $trace)
 
 (= (candidateBelief (inferenceCandidate $rule $term $tv $stamp $premises)) (belief $term $tv $stamp))
 
-(= (allocationBreadth (inferenceAllocation $k $cutoff $depth)) $k)
-(= (allocationCutoff (inferenceAllocation $k $cutoff $depth)) $cutoff)
+(= (allocationBreadth (inferenceAllocation $k $cutoff $deepen)) $k)
+(= (allocationCutoff (inferenceAllocation $k $cutoff $deepen)) $cutoff)
 
-(= (scoredScore (scoredInference $score $candidate $appraised $action)) $score)
-(= (scoredCandidate (scoredInference $score $candidate $appraised $action)) $candidate)
+(= (scoredScore (scoredInference $score $candidate $features $appraised $deltaG)) $score)
+(= (scoredCandidate (scoredInference $score $candidate $features $appraised $deltaG)) $candidate)
+(= (scoredAppraised (scoredInference $score $candidate $features $appraised $deltaG)) $appraised)
+(= (scoredDeltaG (scoredInference $score $candidate $features $appraised $deltaG)) $deltaG)
 
 (= (inferenceRunState (inferenceRun $state $beliefs $trace)) $state)
 (= (inferenceRunBeliefs (inferenceRun $state $beliefs $trace)) $beliefs)
@@ -41,16 +46,6 @@
 
 (= (inferenceDrop $list $n)
     (if (or (== $list ()) (<= $n 0)) $list (inferenceDrop (cdr-atom $list) (- $n 1)))
-)
-
-;; Element-wise mean of equal-length vectors.
-(= (inferenceMeanVectors $vectors)
-    (scaleArray (inferenceSumVectors $vectors) (/ 1.0 (size-atom $vectors)))
-)
-
-(= (inferenceSumVectors $vectors)
-    (let ($head $tail) (decons $vectors)
-        (if (== $tail ()) $head (vectorAdd $head (inferenceSumVectors $tail))))
 )
 
 ;; Term structure
@@ -80,7 +75,7 @@
     )
 )
 
-;; Best relevance over all targets.
+;; rel(h, T): best relevance over all targets.
 (= (inferenceRelevance $term $targets)
     (max-atom (cons-atom 0.0 (collapse (let $target (superpose $targets)
                                            (inferenceTermRelevance $term $target)))))
@@ -113,7 +108,12 @@
         (cons-atom (match &self (GoalIndex $name $idx) $name) (inferenceGoalNamesFrom (+ $idx 1))))
 )
 
-;; Step 0: candidate generation
+;; Goals in the score sum: those MAGUS maps to modulators.
+(= (inferenceTaskGoals)
+    (collapse (match &self (goalModulatorRelevance $goal $mods) $goal))
+)
+
+;; Candidate generation
 
 ;; Rule applications over belief pairs with disjoint stamps, minus known conclusions.
 (= (inferenceCandidates $beliefs)
@@ -145,8 +145,13 @@
 
 ;; Step 1: appraisal (Psi)
 
-;; (candidateFeatures novelty relevance risk effort ruleNovelty known gain)
-(= (inferenceFeatures $candidate $beliefs $targets)
+;; Domain risk of a conclusion: risk tags scaled by strength; negative is reassuring.
+(= (inferenceDomainRisk $term (stv $s $c))
+    (npClip (* (INFERENCE_RISK_DOMAIN_WEIGHT) (* $s (inferenceTagRisk (inferenceTermSymbols $term)))) -1.0 1.0)
+)
+
+;; Features of (r, H); $relevance is rel(h, T), computed before appraisal.
+(= (inferenceFeatures $candidate $relevance $beliefs)
     (let* (
         ((inferenceCandidate $rule $term (stv $s $c) $stamp $premises) $candidate)
         (($ruleNovelty $ruleRisk $ruleEffort) (inferenceRuleProfile $rule))
@@ -155,75 +160,52 @@
             (+ (* (INFERENCE_NOVELTY_UNKNOWN_WEIGHT) (- 1.0 $known))
                (* (INFERENCE_NOVELTY_RULE_WEIGHT) $ruleNovelty))
             0.0 1.0))
-        ($risk (npClip
+        ($gain (positivePart (- $c $known)))
+        ;; Uncertainty left by the proof, minus uncertainty it resolves on the task.
+        ($signedRisk (npClip
             (+ (+ (* (INFERENCE_RISK_RULE_WEIGHT) $ruleRisk)
-                  (* (INFERENCE_RISK_UNCERTAINTY_WEIGHT) (- 1.0 $c)))
-               (* (INFERENCE_RISK_DOMAIN_WEIGHT) (* $s (inferenceTagRisk (inferenceTermSymbols $term)))))
-            0.0 1.0))
+                  (* (INFERENCE_RISK_UNCERTAINTY_WEIGHT) (- (- 1.0 $c) (* $relevance $gain))))
+               (inferenceDomainRisk $term (stv $s $c)))
+            -1.0 1.0))
         ($effort (npClip
             (+ (* (INFERENCE_EFFORT_RULE_WEIGHT) $ruleEffort)
                (* (- 1.0 (INFERENCE_EFFORT_RULE_WEIGHT))
                   (/ (size-atom $stamp) (INFERENCE_EFFORT_DEPTH_REF))))
             0.0 1.0))
     )
-        (candidateFeatures $novelty (inferenceRelevance $term $targets) $risk $effort
-                           $ruleNovelty $known (positivePart (- $c $known)))
+        (candidateFeatures $novelty (* $relevance $c) (positivePart $signedRisk) $signedRisk $effort
+                           $relevance $ruleNovelty $known $gain)
     )
 )
 
-;; Candidate as an OpenPSI stimulus (novelty conduciveness risk effort).
-(= (inferenceStimulus (inferenceCandidate $rule $term (stv $s $c) $stamp $premises)
-                      (candidateFeatures $novelty $relevance $risk $effort $ruleNovelty $known $gain))
-    (stimulus ($novelty (* $relevance (+ 0.5 (* 0.5 $c))) $risk $effort))
+;; Stimulus (novelty conduciveness risk effort). Risk is signed: a reassuring
+;; proof enters as negative risk, so OpenPsi lowers threshold and securing.
+(= (inferenceStimulus (candidateFeatures $novelty $conduciveness $risk $signedRisk $effort $relevance $ruleNovelty $known $gain))
+    (stimulus ($novelty $conduciveness $signedRisk $effort))
 )
 
 ;; ((G, M), r, H) -> (G, M')
-(= (inferenceAppraise $state $candidate $features)
-    (appraise (inferenceAppraisalModule) $state (inferenceStimulus $candidate $features))
+(= (inferenceAppraise $state $features)
+    (appraise (inferenceAppraisalModule) $state (inferenceStimulus $features))
 )
 
 ;; Step 2: decision (D)
 
-;; rel_i(r, H) in [-1, 1], plus domain goal tags.
+;; rel_i(r, H) in [-1, 1]: alignment with goal i on the task, including domain goal tags.
 (= (inferenceGoalRelevance $goal $term $strength
-                           (candidateFeatures $novelty $relevance $risk $effort $ruleNovelty $known $gain))
+                           (candidateFeatures $novelty $conduciveness $risk $signedRisk $effort $relevance $ruleNovelty $known $gain))
     (npClip
-        (+ (case $goal (
-               (gHelp $relevance)
-               (gCurio $novelty)
-               (gNovel (* $ruleNovelty (- 1.0 $known)))
-               (gSelf $gain)
-               (gEthic (- 1.0 (* 2.0 $risk)))
-               ($_ 0.0)
-           ))
-           (* $strength (inferenceTagGoal (inferenceTermSymbols $term) $goal)))
+        (* $relevance
+           (+ (case $goal (
+                  (gHelp 1.0)
+                  (gCurio $novelty)
+                  (gNovel (* $ruleNovelty (- 1.0 $known)))
+                  (gSelf $gain)
+                  (gEthic (- 1.0 (* 2.0 $risk)))
+                  ($_ 0.0)
+              ))
+              (* $strength (inferenceTagGoal (inferenceTermSymbols $term) $goal))))
         -1.0 1.0)
-)
-
-;; Proposed deltaG: served goals grow, risk raises gInd, novelty feeds gTrans.
-(= (inferenceGoalDelta $goal $correlation $confidence
-                       (candidateFeatures $novelty $relevance $risk $effort $ruleNovelty $known $gain))
-    (case $goal (
-        (gInd (* (INFERENCE_IND_RATE) (* $confidence (- $risk 0.3))))
-        (gTrans (* (INFERENCE_TRANS_RATE) (- $novelty 0.5)))
-        ($_ (* (INFERENCE_GOAL_RATE) (* $correlation $confidence)))
-    ))
-)
-
-;; Candidate as a MAGUS action: (action id correlations risk deltaG).
-(= (inferenceAction $candidate $features)
-    (let* (
-        ((inferenceCandidate $rule $term (stv $s $c) $stamp $premises) $candidate)
-        ((candidateFeatures $novelty $relevance $risk $effort $ruleNovelty $known $gain) $features)
-        ($goals (inferenceGoalNames))
-        ($pairs (collapse (let $goal (superpose $goals)
-                              ($goal (inferenceGoalRelevance $goal $term $s $features)))))
-    )
-        (action (inference $rule $term)
-                (collapse (let ($goal $corr) (superpose $pairs) $corr))
-                $risk
-                (collapse (let ($goal $corr) (superpose $pairs) (inferenceGoalDelta $goal $corr $c $features))))
-    )
 )
 
 ;; max(budget spent, safety boundary pressure).
@@ -232,57 +214,82 @@
          (boundaryPressure $state))
 )
 
-;; gInd raises the penalty near limits, gTrans softens it.
-(= (inferenceThrottle $state $pressure)
-    (* $pressure
-       (positivePart
-           (- (* (LAMBDA_IND) (getGoal $state gInd))
-              (* (INFERENCE_TRANS_SOFTENING) (* (LAMBDA_TRANS) (getGoal $state gTrans))))))
+;; Near limits gInd raises the effective risk penalty and gTrans softens it.
+(= (inferencePenaltyScale $state $pressure)
+    (positivePart (+ 1.0 (* $pressure (- (getGoal $state gInd) (getGoal $state gTrans)))))
+)
+
+;; score(r, H) = sum_i g_i m'_i rel_i - lambdaInd gInd risk + lambdaTrans gTrans
+(= (inferenceScore $state $appraised $term $strength $features $penaltyScale)
+    (let* (
+        ((candidateFeatures $novelty $conduciveness $risk $signedRisk $effort $relevance $ruleNovelty $known $gain) $features)
+        ($goals (inferenceTaskGoals))
+        ($goalTerm (sum (collapse (let $goal (superpose $goals)
+                     (* (* (getGoal $state $goal) (magusRelevantModulator $appraised $goal))
+                        (inferenceGoalRelevance $goal $term $strength $features))))))
+    )
+        (+ (- $goalTerm (* $penaltyScale (* (* (LAMBDA_IND) (getGoal $state gInd)) $risk)))
+           (* (LAMBDA_TRANS) (getGoal $state gTrans)))
+    )
+)
+
+;; Goal change a proof proposes: served goals grow, domain risk moves gInd
+;; (unsafe findings raise it, safety and ethics proofs lower it), safe novelty moves gTrans.
+(= (inferenceGoalDelta $goal $term (stv $s $c) $features)
+    (let (candidateFeatures $novelty $conduciveness $risk $signedRisk $effort $relevance $ruleNovelty $known $gain) $features
+        (case $goal (
+            (gInd (* (INFERENCE_IND_RATE) (* $c (inferenceDomainRisk $term (stv $s $c)))))
+            (gTrans (* (INFERENCE_TRANS_RATE) (* $c (- $novelty $risk))))
+            ($_ (* (INFERENCE_GOAL_RATE) (* $c (inferenceGoalRelevance $goal $term $s $features))))
+        )))
 )
 
 ;; Appraise and score one candidate.
-(= (scoreInference $state $candidate $beliefs $targets $throttle)
+(= (scoreInference $state $candidate $relevance $beliefs $penaltyScale)
     (let* (
-        ($features (inferenceFeatures $candidate $beliefs $targets))
-        ($appraised (inferenceAppraise $state $candidate $features))
-        ($action (inferenceAction $candidate $features))
+        ((inferenceCandidate $rule $term (stv $s $c) $stamp $premises) $candidate)
+        ($features (inferenceFeatures $candidate $relevance $beliefs))
+        ($appraised (inferenceAppraise $state $features))
+        ($goals (inferenceGoalNames))
     )
-        (scoredInference (- (scoreCandidate (inferenceDecisionModule) $appraised $action) $throttle)
-                         $candidate $appraised $action)
+        (scoredInference (inferenceScore $state $appraised $term $s $features $penaltyScale)
+                         $candidate $features $appraised
+                         (collapse (let $goal (superpose $goals) (inferenceGoalDelta $goal $term (stv $s $c) $features))))
     )
 )
 
 ;; Step 3: dynamic allocation and pruning
 
-;; Breadth: arousal, gCurio/gNovel, gTrans. Cutoff: threshold, gEthic, gInd. Depth: resolution, gHelp.
+;; Breadth: arousal, gCurio, gSelf, gTrans. Cutoff: threshold, gEthic, gInd. Depth: resolution, gHelp.
 (= (computeInferenceAllocation $state)
     (let* (
         ($widen (npClip
             (* (* (getModulator $state arousal)
-                  (+ (* 0.5 (getGoal $state gCurio)) (* 0.5 (getGoal $state gNovel))))
+                  (+ (* 0.5 (getGoal $state gCurio)) (* 0.5 (getGoal $state gSelf))))
                (+ 0.5 (getGoal $state gTrans)))
             0.0 1.0))
         ($cutoff (+ (INFERENCE_CUTOFF_MIN)
                     (* (INFERENCE_CUTOFF_SPAN)
                        (* (getModulator $state threshold)
                           (* (getGoal $state gEthic) (+ 0.5 (getGoal $state gInd)))))))
-        ($deepen (* (getModulator $state resolution) (getGoal $state gHelp)))
     )
         (inferenceAllocation
             (+ (INFERENCE_K_MIN) (floor-math (+ (* (- (INFERENCE_K_MAX) (INFERENCE_K_MIN)) $widen) 0.5)))
             (min (INFERENCE_CUTOFF_MAX) $cutoff)
-            (+ (INFERENCE_DEPTH_MIN) (floor-math (+ (* (INFERENCE_DEPTH_SPAN) $deepen) 0.5))))
+            (* (getModulator $state resolution) (getGoal $state gHelp)))
     )
 )
 
-;; lowConfidence, tooDeep, lowScore or ok.
-(= (inferencePruneReason (scoredInference $score (inferenceCandidate $rule $term (stv $s $c) $stamp $premises) $appraised $action)
-                         (inferenceAllocation $k $cutoff $depth))
-    (if (< $c $cutoff)
+;; d_max(h): proofs go deeper on the most relevant subgraphs.
+(= (inferenceMaxDepth (inferenceAllocation $k $cutoff $deepen) $relevance)
+    (+ (INFERENCE_DEPTH_MIN) (floor-math (+ (* (INFERENCE_DEPTH_SPAN) (* $deepen $relevance)) 0.5)))
+)
+
+;; Checks that need no appraisal: lowConfidence, tooDeep or ok.
+(= (inferencePrePruneReason (inferenceCandidate $rule $term (stv $s $c) $stamp $premises) $relevance $allocation)
+    (if (< $c (allocationCutoff $allocation))
         lowConfidence
-        (if (> (size-atom $stamp) $depth)
-            tooDeep
-            (if (< $score (INFERENCE_SCORE_FLOOR)) lowScore ok)))
+        (if (> (size-atom $stamp) (inferenceMaxDepth $allocation $relevance)) tooDeep ok))
 )
 
 ;; Descending by score; ties keep their order.
@@ -312,72 +319,122 @@
         0.0 1.0)
 )
 
-;; x*: damped mean deltaG, mean appraised modulators, then safety projection.
+;; Score-weighted mean of (score vector) pairs; plain mean if all scores are 0.
+(= (inferenceWeightedMean $pairs)
+    (let* (
+        ($total (sum (collapse (let ($w $v) (superpose $pairs) $w))))
+        ($n (size-atom $pairs))
+    )
+        (inferenceSumVectors (collapse (let ($w $v) (superpose $pairs)
+                                           (scaleArray $v (if (> $total 0.0) (/ $w $total) (/ 1.0 $n)))))))
+)
+
+(= (inferenceSumVectors $vectors)
+    (let ($head $tail) (decons $vectors)
+        (if (== $tail ()) $head (vectorAdd $head (inferenceSumVectors $tail))))
+)
+
+;; x*: the executed proofs' goal changes (damped) and appraised modulators,
+;; averaged with their scores as weights, kept in the safe region.
 (= (inferenceTargetState $state $executed)
     (let* (
-        ($deltas (collapse (let (scoredInference $score $candidate $appraised $action) (superpose $executed)
-                               (actionDeltaG $action))))
-        ($mods (collapse (let (scoredInference $score $candidate $appraised $action) (superpose $executed)
-                             (motivationModulators $appraised))))
-        ($deltaG (applyHomeostaticDamping $state (inferenceMeanVectors $deltas)))
+        ($deltaG (applyHomeostaticDamping $state
+                    (inferenceWeightedMean (collapse (let $item (superpose $executed)
+                                                         ((scoredScore $item) (scoredDeltaG $item)))))))
         ($goals (clipVector (vectorAdd (motivationGoals $state) $deltaG) 0.0 1.0))
-        ($cautious (raiseBoundaryCaution (motivation $goals (inferenceMeanVectors $mods))))
+        ($mods (inferenceWeightedMean (collapse (let $item (superpose $executed)
+                                                    ((scoredScore $item) (motivationModulators (scoredAppraised $item)))))))
+        ($target (raiseBoundaryCaution (motivation $goals $mods)))
     )
-        (if (isInSafeRegion $cautious) $cautious (projectToSafeRegion $cautious))
+        (if (isInSafeRegion $target) $target (projectToSafeRegion $target))
     )
 )
 
-;; x_{t+1} = (1 - alpha) x_t + alpha x*
-(= (inferenceBlend $state $target)
-    (stateTowardTarget $state $target (inferenceBlendFactor $state))
+;; x_{t+1} = (1 - alpha) x_t + alpha x*. The shift is alpha d(x_t, x*), so near
+;; the boundary alpha is capped to keep shift <= CONTRACTION * previous + EPSILON.
+;; Returns (blendStep $next $shift).
+(= (inferenceBlend $state $target $previousShift)
+    (let* (
+        ($distance (motivationStateDistance $state $target))
+        ($alpha (inferenceBlendFactor $state))
+        ($limit (+ (* (INFERENCE_CONTRACTION) $previousShift) (INFERENCE_CONTRACTION_EPSILON)))
+        ($capped (if (and (> (boundaryPressure $state) 0.0) (> (* $alpha $distance) $limit))
+                     (/ $limit $distance)
+                     $alpha))
+    )
+        (blendStep (stateTowardTarget $state $target $capped) (* $capped $distance))
+    )
+)
+
+;; Blend toward the step's x*. Returns (blendStep $state $shift).
+(= (inferenceBlendProofs $state $executed $shift)
+    (if (== $executed ())
+        (blendStep $state $shift)
+        (inferenceBlend $state (inferenceTargetState $state $executed) $shift))
 )
 
 ;; Control step and loop
 
-;; -> (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation)
-(= (inferenceControlStep $state $beliefs $targets $executedSoFar)
+;; -> (inferenceStepResult $next $beliefs $executed $deferred $pruned $allocation $shift)
+(= (inferenceControlStep $state $beliefs $targets $executedSoFar $shift)
     (let* (
         ($allocation (computeInferenceAllocation $state))
-        ($throttle (inferenceThrottle $state (inferencePressure $state $executedSoFar)))
+        ($penaltyScale (inferencePenaltyScale $state (inferencePressure $state $executedSoFar)))
         ($candidates (inferenceCandidates $beliefs))
-        ($scored (collapse (let $candidate (superpose $candidates)
-                               (scoreInference $state $candidate $beliefs $targets $throttle))))
-        ($reasons (collapse (let $item (superpose $scored)
-                                ((inferencePruneReason $item $allocation) $item))))
-        ($pruned (collapse (let ($reason $item) (superpose $reasons)
-                               (if (== $reason ok) (empty) (pruned $reason $item)))))
-        ($ranked (inferenceSortByScore (collapse (let ($reason $item) (superpose $reasons)
-                                                     (if (== $reason ok) $item (empty))))))
+        ($checked (collapse (let* (($candidate (superpose $candidates))
+                                   ((inferenceCandidate $r $term $tv $st $p) $candidate)
+                                   ($relevance (inferenceRelevance $term $targets)))
+                                ((inferencePrePruneReason $candidate $relevance $allocation) $relevance $candidate))))
+        ($scored (collapse (let ($reason $relevance $candidate) (superpose $checked)
+                               (if (== $reason ok)
+                                   (scoreInference $state $candidate $relevance $beliefs $penaltyScale)
+                                   (empty)))))
+        ($pruned (append
+                    (collapse (let ($reason $relevance $candidate) (superpose $checked)
+                                  (if (== $reason ok) (empty) (pruned $reason $candidate))))
+                    (collapse (let $item (superpose $scored)
+                                  (if (< (scoredScore $item) (INFERENCE_SCORE_FLOOR))
+                                      (pruned lowScore (scoredCandidate $item))
+                                      (empty))))))
+        ($ranked (inferenceSortByScore (collapse (let $item (superpose $scored)
+                                                     (if (< (scoredScore $item) (INFERENCE_SCORE_FLOOR)) (empty) $item)))))
         ($executed (inferenceTake $ranked (allocationBreadth $allocation)))
+        ((blendStep $next $nextShift) (inferenceBlendProofs $state $executed $shift))
     )
         (inferenceStepResult
-            (if (== $executed ()) $state (inferenceBlend $state (inferenceTargetState $state $executed)))
+            $next
             (append $beliefs (inferenceMap candidateBelief (inferenceMap scoredCandidate $executed)))
             $executed
             (inferenceDrop $ranked (allocationBreadth $allocation))
             $pruned
-            $allocation)
+            $allocation
+            $nextShift)
     )
 )
 
-(= (inferenceSummary (scoredInference $score (inferenceCandidate $rule $term $tv $stamp $premises) $appraised $action))
+;; First step of a run.
+(= (inferenceControlStep $state $beliefs $targets $executedSoFar)
+    (inferenceControlStep $state $beliefs $targets $executedSoFar (INFERENCE_INITIAL_SHIFT))
+)
+
+(= (inferenceSummary (scoredInference $score (inferenceCandidate $rule $term $tv $stamp $premises) $features $appraised $deltaG))
     (fired $rule $term $tv (roundNum $score 3))
 )
 
 ;; Trace entry: (inferenceStep $step $allocation $fired $deferred $pruned $state)
-(= (inferenceControlLoop $state $beliefs $targets $step $maxSteps $executedSoFar $trace)
+(= (inferenceControlLoop $state $beliefs $targets $step $maxSteps $executedSoFar $shift $trace)
     (if (> $step $maxSteps)
         (inferenceRun $state $beliefs $trace)
         (let* (
-            ((inferenceStepResult $next $nextBeliefs $executed $deferred $pruned $allocation)
-             (inferenceControlStep $state $beliefs $targets $executedSoFar))
+            ((inferenceStepResult $next $nextBeliefs $executed $deferred $pruned $allocation $nextShift)
+             (inferenceControlStep $state $beliefs $targets $executedSoFar $shift))
             ($nextTrace (append $trace ((inferenceStep $step $allocation (inferenceMap inferenceSummary $executed)
                                                        (size-atom $deferred) (size-atom $pruned) $next))))
         )
             (if (== $executed ())
                 (inferenceRun $state $beliefs $nextTrace)
                 (inferenceControlLoop $next $nextBeliefs $targets (+ $step 1) $maxSteps
-                                      (+ $executedSoFar (size-atom $executed)) $nextTrace)))
+                                      (+ $executedSoFar (size-atom $executed)) $nextShift $nextTrace)))
     )
 )
 
@@ -387,5 +444,5 @@
 )
 
 (= (runInferenceControlOn $state $beliefs $targets $maxSteps)
-    (inferenceControlLoop $state $beliefs $targets 1 $maxSteps 0 ())
+    (inferenceControlLoop $state $beliefs $targets 1 $maxSteps 0 (INFERENCE_INITIAL_SHIFT) ())
 )

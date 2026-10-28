@@ -21,8 +21,8 @@
 
 ;; deltaG rates.
 (= (INFERENCE_GOAL_RATE) 0.15)
-(= (INFERENCE_IND_RATE) 0.15)
-(= (INFERENCE_TRANS_RATE) 0.10)
+(= (INFERENCE_IND_RATE) 0.5)
+(= (INFERENCE_TRANS_RATE) 0.1)
 
 ;; Allocation: breadth, confidence cutoff, depth.
 (= (INFERENCE_K_MIN) 1)
@@ -39,12 +39,15 @@
 ;; Inferences before resource pressure reaches 1.0.
 (= (INFERENCE_BUDGET) 12)
 
-;; How much gTrans softens the gInd throttle.
-(= (INFERENCE_TRANS_SOFTENING) 0.8)
-
 ;; alpha = ALPHA_0 (1 - gInd) + BETA_0 gTrans
 (= (INFERENCE_ALPHA_0) 0.3)
 (= (INFERENCE_BETA_0) 0.4)
 
+;; Near the safe-region boundary each state shift must satisfy
+;; shift <= CONTRACTION * previous shift + EPSILON.
+(= (INFERENCE_CONTRACTION) 0.9)
+(= (INFERENCE_CONTRACTION_EPSILON) 0.01)
+;; Previous shift assumed before the first update of a run.
+(= (INFERENCE_INITIAL_SHIFT) 0.25)
+
 (= (inferenceAppraisalModule) (openPsiAppraisal))
-(= (inferenceDecisionModule) (magusDecision))
