@@ -140,20 +140,34 @@ CSV price data. Start with the [trading-agent README](usecase/metamo-trading-age
 ### PLN inference control
 
 [`inference/`](inference/) uses MetaMo for inference control: it decides which
-Probabilistic Logic Networks inferences to run.
-Each candidate rule application `(r, H)` becomes an OpenPSI stimulus (novelty,
-conduciveness, risk, effort) and is appraised into `(G, M')`. MAGUS scores it as
+Probabilistic Logic Networks inferences to run. Each step has four parts.
 
-```text
-score(r, H) = sum_i g_i m'_i rel_i(r, H) - lambdaInd gInd risk(r, H) + lambdaTrans gTrans growth(r, H)
-```
+1. **Pre-pruning and appraisal.** For each candidate rule application `(r, H)`
+   the task relevance `rel(h, T)` is computed first. Candidates below the
+   confidence cutoff or deeper than `d_max(h)` are pruned before any appraisal.
+   The rest become OpenPSI stimuli (novelty, conduciveness, signed risk, effort)
+   and are appraised into `(G, M')`. Risk is signed: a proof that resolves task
+   uncertainty or concludes something reassuring enters as negative risk, so
+   OpenPSI lowers threshold and securing. Modulators stay in `[0, 1]`.
+2. **Decision.** Each candidate is scored as
 
-The top-k inferences run; the others are deferred or pruned. Breadth (k)
-widens with arousal, curiosity/novelty goals and `gTrans`. The confidence
-cutoff tightens with threshold, `gEthic` and `gInd`. Proof depth grows with
-resolution and `gHelp`. Near resource or risk limits, `gInd` throttles
-inference and `gTrans` softens the throttle. After each step the state blends
-toward its target with `alpha = alpha0 (1 - gInd) + beta0 gTrans`.
+   ```text
+   score(r, H) = sum_i g_i m'_i rel_i(r, H) - lambdaInd gInd risk(r, H) + lambdaTrans gTrans
+   ```
+
+   where `m'_i` is the appraised modulator MAGUS maps to goal `i`. Near
+   resource or risk limits the risk penalty is scaled by
+   `1 + pressure (gInd - gTrans)`.
+3. **Allocation.** The top-k run; the others are deferred or pruned. Breadth
+   widens with arousal, `gCurio`, `gSelf` and `gTrans`. The cutoff tightens
+   with threshold, `gEthic` and `gInd`. Depth is
+   `d_max(h) = 2 + round(4 resolution gHelp rel(h, T))`.
+4. **Coherence.** The state blends toward the score-weighted target `x*` with
+   `alpha = alpha0 (1 - gInd) + beta0 gTrans`. Near the safe-region boundary
+   each shift is capped at `0.9 * previous shift + 0.01`.
+
+Proofs move goals: unsafe findings raise `gInd`, safety and ethics proofs
+lower it and raise `gEthic`.
 
 - [`inference/pln_adapter.metta`](inference/pln_adapter.metta): adapter over
   PeTTa's PLN library (`lib/lib_pln.metta`). The truth functions, rules (`|-`)
@@ -165,7 +179,9 @@ toward its target with `alpha = alpha0 (1 - gInd) + beta0 gTrans`.
   allocation, pruning, blending, and `runInferenceControl`
 - [`inference/config.metta`](inference/config.metta): rule profiles and tuning constants
 - [`inference/self_upgrade.metta`](inference/self_upgrade.metta): a worked
-  self-upgrade example (efficacy, safety, ethics, and user-trust tasks)
+  self-upgrade example (efficacy, safety, ethics, and user-trust tasks). The
+  upgrade is adopted incrementally once efficacy, safety and ethics are proven
+  and `gInd` has fallen.
 
 Run the play-by-play demo:
 
